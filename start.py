@@ -5,7 +5,7 @@ import logging
 import json
 import urllib
 
-import request_handler as Handler
+from request_handler import RequestHandler
 
 class Tetatet:
     # config
@@ -30,13 +30,15 @@ class Tetatet:
         NOW = int(datetime.now().strftime('%s'))
         LAST_POLL_START = NOW
 
+        Handler = RequestHandler(self.request)
+
         while True:
             NOW = int(datetime.now().strftime('%s'))
             LAST_POLL_START = NOW
             try:
                 response = self.request("getUpdates", {"offset":LAST_REQUEST_ID, 'timeout':self.LONG_POLL_TIME})
             except requests.exceptions.Timeout as e:
-                print('Request timed out: {error}'.format(error = str(e)), end="\n\n")
+                print('Request timed out: {error}'.format(error = str(e)))
                 continue
 
             if not response.status_code == requests.codes.ok:
@@ -66,9 +68,9 @@ class Tetatet:
             max_request_id = max([x['update_id'] for x in response_data['result']])
             LAST_REQUEST_ID =  max_request_id + 1 if ((max_request_id + 1) >= LAST_REQUEST_ID) else LAST_REQUEST_ID
 
-            print(response_data, end="\n\n")
-
-
+            # handle message
+            Handler.handle(response_data)
+            
 
 if __name__ == '__main__':
     Tetatet().start_long_polling()
