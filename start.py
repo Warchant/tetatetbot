@@ -1,28 +1,35 @@
-import requests
 from datetime import datetime
 import time
 import logging
 import json
 import urllib
-import multiprocessing as mp
+import requests
+from multiprocessing import Queue, Pool, Process, Manager
 
-from data_structures import Pending, ChatsPool
 from response import Response
+from data_structures import ChatsPool
 
 class Tetatet:
     # config
     LONG_POLL_TIME = 60
+    pending_responses = None
+    pending_users = None
+    chats   = None
 
-    PENDING = Pending()
-    CHATS   = ChatsPool()
+    manager = Manager()
 
     def __init__(self):
-        self.COMMANDS = {
+        self.manager = Manager()
+        self.pending_users = self.manager.Queue()
+        self.pending_responses = self.manager.Queue()
+        self.chats = self.manager.dict()
+
+        self.commands = {
             '/start' : self.start,
-            '/next' : self.next,
-            '/stop' : self.stop,
-            '/status' : self.status
-        }    
+            '/stop'  : self.stop,
+            '/next'  : self.next,
+            '/status': self.status
+        }
 
     def wait(self, t = 60):
         time.sleep(t)
@@ -35,19 +42,19 @@ class Tetatet:
 
         data        = urllib.parse.urlencode(parameters)
         response    = requests.get(TELEGRAM_API_ENDPOINT.format(token=ACCESS_TOKEN,method=method,options=data),timeout=self.LONG_POLL_TIME,headers=HEADERS)
-        #print('Request was made to url: {url}'.format(url = response.url))
+        
         return response
 
-    def start_long_polling(self):
-        LAST_REQUEST_ID = 0
+    def long_poll(self):
         NOW = int(datetime.now().strftime('%s'))
+        LAST_REQUEST_ID = 0
         LAST_POLL_START = NOW
-
+        
         while True:
             NOW = int(datetime.now().strftime('%s'))
             LAST_POLL_START = NOW
             try:
-                response = self.request("getUpdates", {"offset":LAST_REQUEST_ID, 'timeout':self.LONG_POLL_TIME})
+                response = self.request("getUpdates", {"offset": LAST_REQUEST_ID, 'timeout': self.LONG_POLL_TIME})
             except requests.exceptions.Timeout as e:
                 print('Request timed out: {error}'.format(error = str(e)))
                 continue
@@ -77,78 +84,97 @@ class Tetatet:
                 continue
 
             max_request_id  = max([x['update_id'] for x in response_data['result']])
-            LAST_REQUEST_ID =  max_request_id + 1 if ((max_request_id + 1) >= LAST_REQUEST_ID) else LAST_REQUEST_ID
+            LAST_REQUEST_ID = max_request_id + 1 if ((max_request_id + 1) >= LAST_REQUEST_ID) else LAST_REQUEST_ID
 
-            # handle message
-            pool = mp.Pool(processes = 4)
-            message_workers = pool.map_async(self.response_handler, response_data['result'])
-            message_workers.get()
-        return
+            for response in response_data['result']:
+                self.pending_responses.put(response)
+
+            print("[polls]: ", self.pending_responses.qsize())
+    
+    def chat_find(self, A):
+        return None if A not in self.chats else self.chats[A]
+
+    def chat_create(self, A, B):
+        if A not in self.chats:
+            self.chats[A] = B
+        if B not in self.chats:
+            self.chats[B] = A
+        print("Chat {0}<->{1} started".format(A,B))
+
+    def chat_close(self, item):
+        try:
+            A = self.chats.pop(item)
+            B = self.chats.pop(A)
+            print("Chat {0}<->{1} closed".format(A,B))
+            return A
+        except KeyError as e:
+            print("ChatsPool::close(), error: {0}".format(str(e)))
 
     def start(self, chat_id):
-    	
-        self.PENDING.push(chat_id)
+        self.pending_users.put(chat_id)
         self.request("sendChatAction", {"chat_id":chat_id, 'action': "typing"})
-        if len(self.PENDING) > 1:
-            A = self.PENDING.pop()
-            B = self.PENDING.pop()
-            self.CHATS.create(A, B)
+
+        if self.pending_users.qsize() > 1:
+            A = self.pending_users.get()
+            B = self.pending_users.get()
+            self.chat_create(A, B)
             self.request("sendMessage", {"chat_id":A, 'text': "Bot: Say hello!"})
             self.request("sendMessage", {"chat_id":B, 'text': "Bot: Say hello!"})
+
+    def stop(self, chat_id):
+        receiver_chat_id = self.chat_close(chat_id)
+        self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Conversation was stopped by you!"})
+        self.request("sendMessage", {"chat_id":receiver_chat_id, 'text': "Bot: Conversation was stopped by your companion!"})
 
     def next(self, chat_id):
         self.stop(chat_id)
         self.start(chat_id)
 
-    def stop(self, chat_id):
-        receiver_chat_id = self.CHATS.close(chat_id)
-        self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Conversation was stopped by you!"})
-        self.request("sendMessage", {"chat_id":receiver_chat_id, 'text': "Bot: Conversation was stopped by your companion!"})
-
     def status(self, chat_id):
-        text = "There are {0} users online.".format(len(self.PENDING) + len(self.CHATS))
-        self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: " + text})
-    
+        text = "{0} users online.".format( self.pending_users.qsize() + len(self.chats) )
+        self.request('sendMessage', {'chat_id': chat_id, 'text':text})
+
     def resend(self, handle, chat_id):
-        if handle.response.m_type == 'text':
+        if handle.message_type == 'text':
             self.request('sendMessage',{'chat_id':chat_id, 'text':handle.response['text']})
-        if handle.response.m_type == 'photo':
+        if handle.message_type == 'photo':
             self.request('sendPhoto',{'chat_id':chat_id, 'photo':handle.response['photo']['file_id']})
-        if handle.response.m_type == 'audio':
+        if handle.message_type == 'audio':
             self.request('sendAudio',{'chat_id':chat_id, 'audio':handle.response['audio']['file_id']})
-        if handle.response.m_type == 'document':
+        if handle.message_type == 'document':
             self.request('sendDocument',{'chat_id':chat_id, 'document':handle.response['document']['file_id']})
-        if handle.response.m_type == 'video':
+        if handle.message_type == 'video':
             self.request('sendVideo',{'chat_id':chat_id, 'video':handle.response['video']['file_id']})
-        if handle.response.m_type == 'location':
+        if handle.message_type == 'sticker':
+            self.request('sendSticker',{'chat_id':chat_id, 'sticker':handle.response['sticker']['file_id']})
+        if handle.message_type == 'location':
             self.request('sendLocation',{'chat_id':chat_id, 'latitude':handle.response['location']['latitude'], 'longitude':handle.response['location']['longitude']})
 
+    def eval_request(self):
+        while True:
+            if self.pending_responses.qsize() > 0:
+                response = self.pending_responses.get()
+                print("[actions]: ", self.pending_responses.qsize())
+                h = Response(response)
+                if 'text' in h.response.keys():
+                    # is it command?
+                    text = h.response['text']
+                    if text in self.commands.keys():
+                        self.commands[text](h.sender_chat_id)
+                        continue
 
-    def response_handler(self, response):
-        try:
-            print(len(self.CHATS))
-            print(len(self.PENDING), "\n\n")
+                # is h.sender_chat_id in chats?
+                receiver_chat_id = self.chat_find(h.sender_chat_id)
+                if receiver_chat_id != None:
+                    self.resend(h, receiver_chat_id)
 
-            handle = Response(response)
-            if handle.m_type == 'text':
-                text = handle.response['text']
-                if text in self.COMMANDS.keys(): # if it is a command
-                    self.COMMANDS[text](handle.sender_chat_id)
-                    return
-
-            # if this chat_id in pool
-            receiver_chat_id = self.CHATS.find(handle.sender_chat_id)
-            if receiver_chat_id != None:
-                self.resend(handle, receiver_chat_id)
-                return
-
-            # if this chat_id not in pool
-            self.PENDING.push(handle.sender_chat_id)
-            return
-
-        except Exception as e:
-            print("response_handler(response) error: \n{0}".format(str(e)))
-           
 
 if __name__ == '__main__':
-    Tetatet().start_long_polling()
+    T = Tetatet()
+    polls = Process(target=T.long_poll)
+    req = Process(target=T.eval_request)
+    
+    polls.start()
+    req.start()
+    polls.join()
+    req.join()
