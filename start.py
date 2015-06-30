@@ -22,7 +22,7 @@ class Tetatet:
 
         data        = urllib.parse.urlencode(parameters)
         response    = requests.get(TELEGRAM_API_ENDPOINT.format(token=ACCESS_TOKEN,method=method,options=data),timeout=self.LONG_POLL_TIME,headers=HEADERS)
-        print('Request was made to url: {url}'.format(url = response.url), end="\n\n")
+        #print('Request was made to url: {url}'.format(url = response.url))
         return response
 
     def start_long_polling(self):

@@ -31,6 +31,7 @@ class ChatsPool:
 			A = self.chats.pop(item)
 			B = self.chats.pop(A)
 			print("Chat {0}<->{1} closed".format(A,B))
+			return A
 		except KeyError as e:
 			print("ChatsPool::close(), error: {0}".format(str(e)))
 

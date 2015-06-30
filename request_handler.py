@@ -1,4 +1,5 @@
 from users_stack import Queue, ChatsPool
+import json
 
 class RequestHandler:
 	def __init__ (self, request):
@@ -8,40 +9,63 @@ class RequestHandler:
 		"/stop"  : self.stop
 		}
 
+		# all except text and location. actions, which contains field 'file_id'
+		self.actions = {
+		'photo': 'sendPhoto',
+		'audio': 'sendAudio',
+		'document': 'sendDocument',
+		'sticker': 'sendSticker',
+		'video': 'sendVideo'}
+
 		self.request = request
 
 		self.pending = Queue()
 		self.pool = ChatsPool()
 
 	def handle(self, response_data):
-		message = response_data['result'][0]['message']
-		chat_id = message['chat']['id']
+		# TODO: make multithreading!!! we got len(...) at the same time and we have to use len(...) threads
+		for k in range(len(response_data['result'])):
+			message = response_data['result'][k]['message']
+			chat_id = message['chat']['id']
 
-		print(message)
+			# is it command?
+			try:
+				text = message['text']
+				if text in self.commands.keys():
+					self.commands[text](chat_id) # execute command
+					return
+			except KeyError as e:
+				pass
+				# it is not text
 
-		# is it command?
-		try:
-			text = message['text']
-			if text in self.commands.keys():
-				self.commands[text](chat_id) # execute command
+			# is chat_id in pool?
+			receiver_chat_id = self.pool.find(chat_id)
+			if receiver_chat_id != None:
+				keys = message.keys()
+				for action in self.actions:
+					if action in keys:
+						# if in message more than one file
+						if isinstance(message[action], list):
+							file = message[action][0]
+							print(message)
+							self.request(self.actions[action], {'chat_id':receiver_chat_id, action:file['file_id']})
+						else: # if only one file is sending
+							self.request(self.actions[action], {'chat_id':receiver_chat_id, action:message[action]['file_id']})
+
+				if 'text' in keys:
+					self.request('sendMessage', {'chat_id':receiver_chat_id, 'text':message['text']})
+				if 'location' in keys:
+					print(message)
+					self.request('sendLocation', {'chat_id':receiver_chat_id, 'latitude':message['location']['latitude'], 'longitude':message['location']['longitude']})
+
 				return
-		except KeyError as e:
-			pass
-			# it is not text
 
-		# is chat_id in pool?
-		receiver_chat_id = self.pool.find(chat_id)
-		if receiver_chat_id != None:
-			self.request("forwardMessage", {"chat_id":receiver_chat_id, "from_chat_id": chat_id, "message_id":message['message_id']})
-			print("request sended")
-			return
-
-		# add chat_id to pending
-		self.pending.push(chat_id)
+			# add chat_id to pending
+			self.pending.push(chat_id)
 
 	def start(self, chat_id):
 		self.pending.push(chat_id)
-		self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Waiting a company for you!"})
+		self.request("sendChatAction", {"chat_id":chat_id, 'action': "find_location"})
 		
 		if len(self.pending) > 1:
 			A = self.pending.pop()
@@ -55,5 +79,6 @@ class RequestHandler:
 		self.start(chat_id)
 
 	def stop(self, chat_id):
-		self.pool.close(chat_id)
-		self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Bye!"})
+		receiver_chat_id = self.pool.close(chat_id)
+		self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Conversation was stopped by you!"})
+		self.request("sendMessage", {"chat_id":receiver_chat_id, 'text': "Bot: Conversation was stopped by your companion!"})
