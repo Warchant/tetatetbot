@@ -7,7 +7,6 @@ import requests
 from multiprocessing import Queue, Pool, Process, Manager
 
 from response import Response
-from data_structures import ChatsPool
 
 class Tetatet:
     # config
@@ -89,17 +88,18 @@ class Tetatet:
             for response in response_data['result']:
                 self.pending_responses.put(response)
 
-            print("[polls]: ", self.pending_responses.qsize())
+            print("[added]: ", self.pending_responses.qsize())
     
     def chat_find(self, A):
         return None if A not in self.chats else self.chats[A]
 
     def chat_create(self, A, B):
-        if A not in self.chats:
-            self.chats[A] = B
-        if B not in self.chats:
-            self.chats[B] = A
-        print("Chat {0}<->{1} started".format(A,B))
+        if A != B:
+            if A not in self.chats:
+                self.chats[A] = B
+            if B not in self.chats:
+                self.chats[B] = A
+            print("Chat {0}<->{1} started".format(A,B))
 
     def chat_close(self, item):
         try:
@@ -117,6 +117,8 @@ class Tetatet:
         if self.pending_users.qsize() > 1:
             A = self.pending_users.get()
             B = self.pending_users.get()
+            if A == B:
+                return
             self.chat_create(A, B)
             self.request("sendMessage", {"chat_id":A, 'text': "Bot: Say hello!"})
             self.request("sendMessage", {"chat_id":B, 'text': "Bot: Say hello!"})
@@ -131,13 +133,14 @@ class Tetatet:
         self.start(chat_id)
 
     def status(self, chat_id):
-        text = "{0} users online.".format( self.pending_users.qsize() + len(self.chats) )
+        text = "{0} users is looking for a company.".format( self.pending_users.qsize() + len(self.chats) )
         self.request('sendMessage', {'chat_id': chat_id, 'text':text})
 
     def resend(self, handle, chat_id):
         if handle.message_type == 'text':
             self.request('sendMessage',{'chat_id':chat_id, 'text':handle.response['text']})
         if handle.message_type == 'photo':
+            print(handle.response)
             self.request('sendPhoto',{'chat_id':chat_id, 'photo':handle.response['photo']['file_id']})
         if handle.message_type == 'audio':
             self.request('sendAudio',{'chat_id':chat_id, 'audio':handle.response['audio']['file_id']})
@@ -154,9 +157,9 @@ class Tetatet:
         while True:
             if self.pending_responses.qsize() > 0:
                 response = self.pending_responses.get()
-                print("[actions]: ", self.pending_responses.qsize())
+                print("[removed]: ", self.pending_responses.qsize())
                 h = Response(response)
-                if 'text' in h.response.keys():
+                if h.message_type == 'text':
                     # is it command?
                     text = h.response['text']
                     if text in self.commands.keys():
@@ -176,5 +179,6 @@ if __name__ == '__main__':
     
     polls.start()
     req.start()
+
     polls.join()
     req.join()
