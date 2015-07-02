@@ -19,15 +19,15 @@ class Tetatet:
 
     def __init__(self):
         self.manager = Manager()
-        self.pending_users = self.manager.Queue()
+        self.pending_users = self.manager.list()
         self.pending_responses = self.manager.Queue()
         self.chats = self.manager.dict()
 
         self.commands = {
             '/start' : self.start,
             '/stop'  : self.stop,
-            '/next'  : self.next,
-            '/status': self.status
+            '/status': self.status,
+            '/test'  : self.test
         }
 
     def wait(self, t = 60):
@@ -88,18 +88,17 @@ class Tetatet:
             for response in response_data['result']:
                 self.pending_responses.put(response)
 
-            print("[added]: ", self.pending_responses.qsize())
+            print("[added]:\t Size: ", self.pending_responses.qsize())
     
     def chat_find(self, A):
         return None if A not in self.chats else self.chats[A]
 
     def chat_create(self, A, B):
-        if A != B:
-            if A not in self.chats:
-                self.chats[A] = B
-            if B not in self.chats:
-                self.chats[B] = A
-            print("Chat {0}<->{1} started".format(A,B))
+        if A not in self.chats:
+            self.chats[A] = B
+        if B not in self.chats:
+            self.chats[B] = A
+        print("Chat {0}<->{1} started".format(A,B))
 
     def chat_close(self, item):
         try:
@@ -111,69 +110,89 @@ class Tetatet:
             print("ChatsPool::close(), error: {0}".format(str(e)))
 
     def start(self, chat_id):
-        self.pending_users.put(chat_id)
-        self.request("sendChatAction", {"chat_id":chat_id, 'action': "typing"})
+        if chat_id not in self.pending_users:
+            self.pending_users.append(chat_id)
+            self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Looking for a partner..."})
+        else:
+            self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Don't repeat yourself. Bot is looking for partner for you."})
 
-        if self.pending_users.qsize() > 1:
-            A = self.pending_users.get()
-            B = self.pending_users.get()
-            if A == B:
-                return
+        if len(self.pending_users) > 1:
+            A = self.pending_users.pop(0)
+            B = self.pending_users.pop(0)
             self.chat_create(A, B)
             self.request("sendMessage", {"chat_id":A, 'text': "Bot: Say hello!"})
             self.request("sendMessage", {"chat_id":B, 'text': "Bot: Say hello!"})
 
+    def test(self, chat_id):
+        if chat_id not in self.chats and chat_id not in self.pending_users:
+            self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: You are in chat with yourself (test mode)"})
+            self.chat_create(chat_id, chat_id)
+            self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Say hello!"})
+        else:
+            self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Stop previous chat before entering in test mode"})
+
     def stop(self, chat_id):
         receiver_chat_id = self.chat_close(chat_id)
-        self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Conversation was stopped by you!"})
-        self.request("sendMessage", {"chat_id":receiver_chat_id, 'text': "Bot: Conversation was stopped by your companion!"})
-
-    def next(self, chat_id):
-        self.stop(chat_id)
-        self.start(chat_id)
+        self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Conversation was stopped."})
+        self.request("sendMessage", {"chat_id":receiver_chat_id, 'text': "Bot: Conversation was stopped by your partner!"})
 
     def status(self, chat_id):
-        text = "{0} users is looking for a company.".format( self.pending_users.qsize() + len(self.chats) )
+        text = "{0} users is looking for a company.".format( len(self.pending_users) + len(self.chats) )
         self.request('sendMessage', {'chat_id': chat_id, 'text':text})
 
-    def resend(self, handle, chat_id):
-        if handle.message_type == 'text':
-            self.request('sendMessage',{'chat_id':chat_id, 'text':handle.response['text']})
-        if handle.message_type == 'photo':
-            print(handle.response)
-            self.request('sendPhoto',{'chat_id':chat_id, 'photo':handle.response['photo']['file_id']})
-        if handle.message_type == 'audio':
-            self.request('sendAudio',{'chat_id':chat_id, 'audio':handle.response['audio']['file_id']})
-        if handle.message_type == 'document':
-            self.request('sendDocument',{'chat_id':chat_id, 'document':handle.response['document']['file_id']})
-        if handle.message_type == 'video':
-            self.request('sendVideo',{'chat_id':chat_id, 'video':handle.response['video']['file_id']})
-        if handle.message_type == 'sticker':
-            self.request('sendSticker',{'chat_id':chat_id, 'sticker':handle.response['sticker']['file_id']})
-        if handle.message_type == 'location':
-            self.request('sendLocation',{'chat_id':chat_id, 'latitude':handle.response['location']['latitude'], 'longitude':handle.response['location']['longitude']})
+    def resend(self, response, chat_id):
+        k = response.keys()
+        if 'reply_to_message' in k:
+            # it is a reply
+            forward_m_id = response['reply_to_message']['message_id']
+        else:
+            if 'forward_from' in k:
+                forward_m_id = response['message_id']
+                if 'text' in k:
+                    response['text'] = 'message forwarded...'
+            else:
+                forward_m_id = ''
+
+        print(response)
+
+        if 'text' in k:
+            self.request('sendMessage',{'chat_id':chat_id, 'text':response['text'], 'reply_to_message_id': forward_m_id})
+        if 'photo' in k:
+            if isinstance(response['photo'], list):
+                response['photo'] = response['photo'][0]
+            a = self.request('sendPhoto',{'chat_id':chat_id, 'photo':response['photo']['file_id'], 'reply_to_message_id': forward_m_id})
+        if 'audio' in k:
+            self.request('sendAudio',{'chat_id':chat_id, 'audio':response['audio']['file_id'], 'reply_to_message_id': forward_m_id})
+        if 'document' in k:
+            self.request('sendDocument',{'chat_id':chat_id, 'document':response['document']['file_id'], 'reply_to_message_id':forward_m_id})
+        if 'video' in k:
+            self.request('sendVideo',{'chat_id':chat_id, 'video':response['video']['file_id'], 'reply_to_message_id': forward_m_id})
+        if 'sticker' in k:
+            self.request('sendSticker',{'chat_id':chat_id, 'sticker':response['sticker']['file_id'], 'reply_to_message_id': forward_m_id})
+        if 'location' in k:
+            self.request('sendLocation',{'chat_id':chat_id, 'latitude':response['location']['latitude'], 'longitude':response['location']['longitude'], 'reply_to_message_id': forward_m_id})
 
     def eval_request(self):
         while True:
             if self.pending_responses.qsize() > 0:
-                response = self.pending_responses.get()
-                print("[removed]: ", self.pending_responses.qsize())
-                h = Response(response)
-                if h.message_type == 'text':
-                    # is it command?
-                    text = h.response['text']
-                    if text in self.commands.keys():
-                        self.commands[text](h.sender_chat_id)
-                        continue
+                response = self.pending_responses.get()['message']
+                print("[removed]:\t Size: ", self.pending_responses.qsize())
 
+                if 'text' in response.keys():
+                    # is it command?
+                    text = response['text']
+                    if text in self.commands.keys():
+                        self.commands[text](response['chat']['id'])
+                        continue
                 # is h.sender_chat_id in chats?
-                receiver_chat_id = self.chat_find(h.sender_chat_id)
+                receiver_chat_id = self.chat_find(response['chat']['id'])
                 if receiver_chat_id != None:
-                    self.resend(h, receiver_chat_id)
+                    self.resend(response, receiver_chat_id)
 
 
 if __name__ == '__main__':
     T = Tetatet()
+
     polls = Process(target=T.long_poll)
     req = Process(target=T.eval_request)
     
