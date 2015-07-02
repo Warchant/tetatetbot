@@ -4,9 +4,7 @@ import logging
 import json
 import urllib
 import requests
-from multiprocessing import Queue, Pool, Process, Manager
-
-from response import Response
+from multiprocessing import Queue, Process, Manager
 
 class Tetatet:
     # config
