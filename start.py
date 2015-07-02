@@ -132,7 +132,8 @@ class Tetatet:
             self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Stop previous chat before entering in test mode"})
 
     def stop(self, chat_id):
-        self.pending_users.remove(chat_id)
+        if chat_id in self.pending_users:
+            self.pending_users.remove(chat_id)
         receiver_chat_id = self.chat_close(chat_id)
         self.request("sendMessage", {"chat_id":chat_id, 'text': "Bot: Conversation was stopped."})
         self.request("sendMessage", {"chat_id":receiver_chat_id, 'text': "Bot: Conversation was stopped by your partner!"})
